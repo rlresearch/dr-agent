@@ -21,14 +21,14 @@ from tenacity import (
     wait_exponential,
 )
 
-# Optional transformers import for vLLM models only
+# Optional tokenizers import for vLLM models only (lightweight alternative to transformers)
 try:
-    from transformers import AutoTokenizer
+    from tokenizers import Tokenizer
 
-    TRANSFORMERS_AVAILABLE = True
+    TOKENIZERS_AVAILABLE = True
 except ImportError:
-    TRANSFORMERS_AVAILABLE = False
-    AutoTokenizer = None
+    TOKENIZERS_AVAILABLE = False
+    Tokenizer = None
 
 from .tool_interface.base import BaseTool
 from .tool_interface.data_types import DocumentToolOutput, ToolInput, ToolOutput
@@ -113,9 +113,9 @@ class LLMToolClient:
         self.is_commercial_api_model = self._is_commercial_api_model(model_name)
 
         # Initialize tokenizer only for self-hosted models
-        if not self.is_commercial_api_model and TRANSFORMERS_AVAILABLE:
+        if not self.is_commercial_api_model and TOKENIZERS_AVAILABLE:
             try:
-                self.tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer = Tokenizer.from_pretrained(
                     tokenizer_name if tokenizer_name else model_name
                 )
             except Exception as e:
@@ -238,7 +238,7 @@ class LLMToolClient:
                 return len(text) // 4
         elif self.tokenizer:
             try:
-                return len(self.tokenizer.encode(text))
+                return len(self.tokenizer.encode(text).ids)
             except Exception as e:
                 print(f"Warning: Could not count tokens: {e}")
                 # Fallback: rough estimate (4 characters per token)
@@ -286,24 +286,18 @@ class LLMToolClient:
         return max(100, remaining_tokens)
 
     def _messages_to_prompt(self, messages: List[Dict[str, str]]) -> str:
-        """Convert messages to a single prompt string using tokenizer chat template"""
+        """Convert messages to a single prompt string
+
+        Note: The lightweight tokenizers library doesn't support chat templates.
+        For vLLM models, litellm handles chat template application server-side.
+        """
         if self.is_commercial_api_model:
             # For commercial API models, return messages as-is since we'll use chat completion API
             raise NotImplementedError(
                 "Commercial API models should use chat completion API directly"
             )
 
-        if self.tokenizer and hasattr(self.tokenizer, "apply_chat_template"):
-            try:
-                return self.tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
-            except Exception as e:
-                print(f"Warning: Could not apply chat template: {e}")
-                # Fallback to simple concatenation
-                return self._fallback_messages_to_prompt(messages)
-        else:
-            return self._fallback_messages_to_prompt(messages)
+        return self._fallback_messages_to_prompt(messages)
 
     def _fallback_messages_to_prompt(self, messages: List[Dict[str, str]]) -> str:
         """Fallback method to convert messages to prompt"""

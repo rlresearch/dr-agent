@@ -43,14 +43,13 @@ dependencies = [
     "nltk",
     "crawl4ai",
     "pyyaml",
-    "transformers",
+    "tokenizers",
     "blobfile",
     "cohere",
     "litellm",
     "diskcache",
     "typer",
     "omegaconf",
-    "datasets",
     "retry",
 ]
 
@@ -71,6 +70,7 @@ vllm = [
 ]
 all = [
     "vllm",
+    "datasets",
 ]
 
 [tool.setuptools.packages.find]

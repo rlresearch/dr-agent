@@ -720,8 +720,30 @@ class BaseWorkflow(ABC):
         return all_results
 
     @classmethod
-    def app(cls):
-        """Create a typer app with commands for this workflow."""
+    def app(cls, default_command: Optional[str] = None):
+        """Create a typer app with commands for this workflow.
+
+        Args:
+            default_command: If provided, directly execute this command when no command is given.
+        """
+        import sys
+
+        # Known command names for this app
+        known_commands = {
+            "debug",
+            "generate_dataset",
+            "collect_rejection_sampling_data",
+            "rejection_sampling",
+            "serve",
+        }
+
+        # If default_command is provided and no known command is in argv, inject it
+        if default_command is not None:
+            has_command = any(arg in known_commands for arg in sys.argv[1:])
+            if not has_command:
+                print(f"Using default command: {default_command}")
+                sys.argv.insert(1, default_command)
+
         app = typer.Typer()
 
         @app.command()
