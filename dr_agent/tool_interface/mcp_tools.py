@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from anyio.streams.memory import BrokenResourceError
 from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import FastMCPError, ResourceError
 from fastmcp.utilities.exceptions import McpError
 from tenacity import (
@@ -153,9 +154,10 @@ class MCPMixin:
             else:
                 url = f"http://{self.mcp_host}:{self.mcp_port}/mcp"
             logger.debug(f"Using MCP transport: {transport_type}, url: {url}")
-            return Client(
-                url, timeout=self.timeout, headers=headers if headers else None
+            transport = StreamableHttpTransport(
+                url, headers=headers if headers else None
             )
+            return Client(transport=transport, timeout=self.timeout)
         elif transport_type == "FastMCPTransport":
             if not self.mcp_executable:
                 raise ValueError(
