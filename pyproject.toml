@@ -35,12 +35,7 @@ dependencies = [
     "tinydb",
     "tinydb-serialization",
     "tenacity",
-    "beautifulsoup4",
-    "pdfplumber",
-    "lxml",
     "aiohttp",
-    "chardet",
-    "nltk",
     "crawl4ai",
     "pyyaml",
     "tokenizers",
@@ -68,7 +63,15 @@ dev = [
 vllm = [
     "vllm",
 ]
+webparser = [
+    "beautifulsoup4",
+    "lxml",
+    "nltk",
+    "chardet",
+    "pdfplumber",
+]
 all = [
+    "crawl4ai",
     "vllm",
     "datasets",
 ]
