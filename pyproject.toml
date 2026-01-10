@@ -36,11 +36,9 @@ dependencies = [
     "tinydb-serialization",
     "tenacity",
     "aiohttp",
-    "crawl4ai",
     "pyyaml",
     "tokenizers",
     "blobfile",
-    "cohere",
     "litellm",
     "diskcache",
     "typer",
@@ -74,6 +72,7 @@ all = [
     "crawl4ai",
     "vllm",
     "datasets",
+    "cohere",
 ]
 
 [tool.setuptools.packages.find]

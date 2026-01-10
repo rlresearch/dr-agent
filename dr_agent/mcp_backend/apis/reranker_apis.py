@@ -1,6 +1,5 @@
 from typing import Any, Dict, List
 
-import cohere
 from pydantic import BaseModel
 
 from ..cache import cached
@@ -48,6 +47,8 @@ def vllm_hosted_reranker(
     Returns:
         List of RerankResultItem objects with index, relevance_score, and document
     """
+
+    import cohere
 
     if top_n == -1:
         top_n = len(documents)
