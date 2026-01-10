@@ -106,6 +106,22 @@ class MCPMixin:
         self.mcp_host = kwargs.pop("mcp_host", None) or os.environ.get(
             "MCP_TRANSPORT_HOST", "localhost"
         )
+        # Full URL override (takes precedence over host/port)
+        self.mcp_url = kwargs.pop("mcp_url", None) or os.environ.get("MCP_URL")
+        # API key for authentication
+        self.mcp_api_key = kwargs.pop("mcp_api_key", None) or os.environ.get(
+            "MCP_API_KEY"
+        )
+
+        # Deprecation warning for host/port usage
+        if not self.mcp_url and self.transport_type == "StreamableHttpTransport":
+            warnings.warn(
+                "Using MCP_TRANSPORT_HOST/MCP_TRANSPORT_PORT (or mcp_host/mcp_port) is deprecated "
+                "and will be removed in a future version. Please use MCP_URL (or mcp_url) instead, "
+                "e.g. MCP_URL='http://localhost:8000/mcp' or MCP_URL='https://your-server.com/mcp'",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         # Call super().__init__ to ensure proper MRO handling
         super().__init__(*args, timeout=timeout, name=name, **kwargs)
         self.timeout = timeout
@@ -125,12 +141,20 @@ class MCPMixin:
 
         transport_type = self.transport_type
 
+        # Build headers with API key if provided
+        headers = {}
+        if self.mcp_api_key:
+            headers["Authorization"] = f"Bearer {self.mcp_api_key}"
+
         if transport_type == "StreamableHttpTransport":
-            logger.debug(
-                f"Using MCP transport: {transport_type}, port: {self.mcp_port}"
-            )
+            # Use full URL if provided, otherwise construct from host/port
+            if self.mcp_url:
+                url = self.mcp_url
+            else:
+                url = f"http://{self.mcp_host}:{self.mcp_port}/mcp"
+            logger.debug(f"Using MCP transport: {transport_type}, url: {url}")
             return Client(
-                f"http://{self.mcp_host}:{self.mcp_port}/mcp", timeout=self.timeout
+                url, timeout=self.timeout, headers=headers if headers else None
             )
         elif transport_type == "FastMCPTransport":
             if not self.mcp_executable:
