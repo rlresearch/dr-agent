@@ -94,7 +94,8 @@ class PaperInfo(BaseModel):
     corpusId: str
     title: str
     authors: List[str]
-    openAccessInfo: OpenAccessInfo
+    openAccessInfo: Optional[OpenAccessInfo] = None
+    url: Optional[str] = None
 
 
 class PaperSnippet(BaseModel):

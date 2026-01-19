@@ -694,7 +694,7 @@ class SemanticScholarSnippetSearchTool(MCPSearchTool):
                     doc = Document(
                         title=paper_info.get("title", "").strip(),
                         snippet=snippet_text,
-                        url="",  # Semantic Scholar doesn't provide direct URLs in snippet search
+                        url=paper_info.get("url", ""),
                         text="",  # No full text content from search
                         score=item.get("score"),
                     )

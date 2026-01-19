@@ -1,4 +1,5 @@
 import os
+import re
 import warnings
 from pathlib import Path
 from typing import Generic, List, Optional, TypeVar, Union
@@ -33,6 +34,9 @@ S2_PAPER_REFERENCE_FIELDS = (
     "paperId,corpusId,contexts,intents,isInfluential,title,abstract,venue,year,authors"
 )
 S2_PAPER_RECOMMENDATION_FIELDS = "paperId,corpusId,title,abstract,year,venue"
+
+# You cannot set other paper fields in the snippet search.
+S2_SNIPPET_SEARCH_FIELDS = "snippet.text,snippet.section"
 
 T = TypeVar("T")
 
@@ -168,12 +172,19 @@ class SemanticScholarSnippetSearchQueryParams(BaseModel):
     )
 
 
+def _extract_url_from_disclaimer(disclaimer: str) -> Optional[str]:
+    """Extract URL from openAccessInfo disclaimer text."""
+    match = re.search(r"https?://[^\s,]+", disclaimer)
+    return match.group(0) if match else None
+
+
 @cached()
 def search_semantic_scholar_snippets(
     query_params: SemanticScholarSnippetSearchQueryParams,
     *,
     offset: int = 0,
     limit: int = 10,
+    fields: str = S2_SNIPPET_SEARCH_FIELDS,
     timeout: int = TIMEOUT,
 ) -> PaperSnippetApiResponse[PaperSnippet]:
     if offset:
@@ -190,7 +201,7 @@ def search_semantic_scholar_snippets(
     res = requests.get(
         f"{S2_GRAPH_API_URL}/snippet/search",
         params={
-            # "offset": offset,
+            "fields": fields,
             "limit": limit,
             **params,
         },
@@ -198,6 +209,28 @@ def search_semantic_scholar_snippets(
         timeout=timeout,
     )
     results = res.json()
+
+    # Add URL to each paper in the results
+    if "data" in results:
+        for item in results["data"]:
+            paper = item.get("paper", {})
+            if paper.get("url") is None:
+                # Try to extract URL from openAccessInfo disclaimer
+                open_access_info = paper.get("openAccessInfo")
+                if open_access_info and open_access_info.get("disclaimer"):
+                    extracted_url = _extract_url_from_disclaimer(
+                        open_access_info["disclaimer"]
+                    )
+                    if extracted_url:
+                        paper["url"] = extracted_url
+                        continue
+                # Fallback: construct semantic scholar URL from corpusId
+                corpus_id = paper.get("corpusId")
+                if corpus_id:
+                    paper["url"] = (
+                        f"https://api.semanticscholar.org/CorpusID:{corpus_id}"
+                    )
+
     return results
 
 
