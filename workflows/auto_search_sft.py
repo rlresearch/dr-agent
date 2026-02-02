@@ -86,10 +86,25 @@ class SearchAgent(BaseAgent):
         question: str,
         dataset_name: Optional[str] = None,
         history: Optional[List[Dict[str, str]]] = None,
+        current_time: Optional[str] = None,
+        user_timezone: Optional[str] = None,
     ) -> str:
+        from datetime import datetime
 
         PROMPT = UNIFIED_TOOL_CALLING_STRUCTURED_PROMPTS[self.prompt_version]
         system_prompt = PROMPT["system_prompt"]
+
+        # Format time placeholders in system prompt if present
+        if "{current_time}" in system_prompt or "{user_timezone}" in system_prompt:
+            # Provide defaults if not specified
+            if current_time is None:
+                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if user_timezone is None:
+                user_timezone = "UTC"
+            system_prompt = system_prompt.format(
+                current_time=current_time,
+                user_timezone=user_timezone,
+            )
 
         if dataset_name in [
             "2wiki",
@@ -597,6 +612,8 @@ class AutoReasonSearchWorkflow(BaseWorkflow):
         verbose: bool = True,
         search_callback: Optional[Any] = None,
         step_callback: Optional[Any] = None,
+        current_time: Optional[str] = None,
+        user_timezone: Optional[str] = None,
     ) -> Dict[str, Any]:
         cfg = self.configuration
         assert cfg is not None
@@ -642,6 +659,8 @@ class AutoReasonSearchWorkflow(BaseWorkflow):
             max_tool_calls=cfg.search_agent_max_tool_calls,
             verbose=verbose,
             on_step_callback=step_callback,
+            current_time=current_time,
+            user_timezone=user_timezone,
         )
 
         if search_callback:

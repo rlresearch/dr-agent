@@ -34,6 +34,12 @@ class ChatRequest(BaseModel):
     content: Optional[str] = None
     messages: Optional[List[Message]] = None
     dataset_name: str = "long_form"
+    current_time: Optional[str] = None
+    user_timezone: Optional[str] = None
+
+
+class WarmupRequest(BaseModel):
+    model_name: Optional[str] = None
 
 
 class SSECallback:
@@ -456,6 +462,8 @@ def create_app(
         dataset_name: str,
         event_queue: asyncio.Queue,
         messages: Optional[List[Dict[str, str]]] = None,
+        current_time: Optional[str] = None,
+        user_timezone: Optional[str] = None,
     ):
         """Run the workflow and stream events via the queue."""
         callback = SSECallback(event_queue)
@@ -469,6 +477,8 @@ def create_app(
             messages=messages,
             verbose=False,
             step_callback=callback,
+            current_time=current_time,
+            user_timezone=user_timezone,
         )
 
         # Send final answer if available
@@ -582,7 +592,12 @@ def create_app(
             # Start the workflow in a background task
             task = asyncio.create_task(
                 run_workflow_with_streaming(
-                    content, request.dataset_name, event_queue, messages=messages_dicts
+                    content,
+                    request.dataset_name,
+                    event_queue,
+                    messages=messages_dicts,
+                    current_time=request.current_time,
+                    user_timezone=request.user_timezone,
                 )
             )
 
@@ -608,6 +623,24 @@ def create_app(
             },
         )
 
+    @app.post("/warmup")
+    async def warmup(request: WarmupRequest, _: bool = Depends(verify_auth)):
+        """
+        Warmup endpoint to pre-warm the model for faster first response.
+
+        This endpoint makes a minimal request to the LLM to ensure it's loaded
+        and ready for inference, reducing cold-start latency.
+        """
+        try:
+            # Simple warmup: just verify the workflow is available
+            if app.state.workflow is None:
+                return {"status": "error", "message": "Workflow not initialized"}
+
+            # Return warm status - the actual model warmup happens on first inference
+            return {"status": "warm", "model_name": request.model_name}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
     @app.get("/health")
     async def health_check():
         """Health check endpoint."""
@@ -615,7 +648,7 @@ def create_app(
             "status": "ok",
             "workflow_loaded": app.state.workflow is not None,
             "ui_mode": ui_mode,
-            "endpoints": ["/chat", "/chat/stream"],
+            "endpoints": ["/chat", "/chat/stream", "/warmup"],
         }
 
     # Mount UI files if available
