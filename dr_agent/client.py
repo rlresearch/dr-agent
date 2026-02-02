@@ -63,9 +63,10 @@ class GenerationConfig:
     top_k: int = 1
     min_p: float = 0.0
     retry_limit: int = 3
-    timeout: int = 3600
-    top_k: int = 1
-    repetition_penalty: float = 1.0
+    retry_min_wait: float = 2.0  # Minimum wait between retries (seconds)
+    retry_max_wait: float = 30.0  # Maximum wait between retries (seconds)
+    timeout: int = 300  # Default timeout for chat messages (5 minutes)
+    warmup_timeout: int = 60  # Timeout for warmup requests (1 minute)
     seed: Optional[int] = None
 
 
@@ -1176,11 +1177,6 @@ class LLMToolClient:
         response = await litellm.acompletion(**params)
         return response
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((asyncio.TimeoutError, Exception)),
-    )
     async def _generate_single_response_commercial_api(
         self,
         messages: List[Dict[str, str]],
@@ -1193,16 +1189,14 @@ class LLMToolClient:
         include_reasoning: bool = False,
         **kwargs,
     ) -> str:
-        """Generate a single response from commercial API models using chat completion API with tenacity retry
+        """Generate a single response from commercial API models using chat completion API with retry
 
-        This method includes special handling for:
-        1. Stop tokens: When the API stops due to hitting a stop token, it typically doesn't include that
-           stop token in the response content. However, tool calling logic often needs to see those stop
-           tokens (e.g., tool end tags like '</search>'). This method automatically detects when generation
-           stopped due to a stop token and adds the appropriate stop token back to the content.
-        2. Reasoning content: For models that support reasoning (like OpenAI o1), this method can optionally
-           include the model's internal reasoning process wrapped in <think>...</think> tags.
+        This method includes:
+        1. Configurable retry logic with exponential backoff
+        2. Stop token handling: Automatically adds stop tokens back to content when needed
+        3. Reasoning content: Optionally includes model reasoning wrapped in <think> tags
         """
+        from tenacity import AsyncRetrying
 
         config = self.generation_config
 
@@ -1216,6 +1210,7 @@ class LLMToolClient:
             "top_p": top_p if top_p is not None else config.top_p,
             "max_tokens": max_tokens if max_tokens is not None else config.max_tokens,
             "stop": stop_sequences,
+            "timeout": config.timeout,
         }
 
         # Add seed if provided
@@ -1230,113 +1225,114 @@ class LLMToolClient:
 
         # Add any additional kwargs
         params.update(kwargs)
-        # print(params)
 
-        try:
-            response = await litellm.acompletion(**params)
-            original_content = response.choices[0].message.content or ""
-            content = original_content
+        # Retry logic with configurable parameters
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(config.retry_limit),
+            wait=wait_exponential(
+                multiplier=1,
+                min=config.retry_min_wait,
+                max=config.retry_max_wait,
+            ),
+            retry=retry_if_exception_type((asyncio.TimeoutError, Exception)),
+            reraise=True,
+        ):
+            with attempt:
+                response = await litellm.acompletion(**params)
+                original_content = response.choices[0].message.content or ""
+                content = original_content
 
-            # Extract reasoning content if available and requested
-            reasoning_content = None
-            if include_reasoning:
-                message = response.choices[0].message
-                # Try to get reasoning content from different possible locations
-                reasoning_content = getattr(message, "reasoning_content", None) or (
-                    hasattr(message, "provider_specific_fields")
-                    and isinstance(message.provider_specific_fields, dict)
-                    and message.provider_specific_fields.get("reasoning_content")
-                )
-
-                if reasoning_content and verbose:
-                    print(
-                        f"Found reasoning content: {repr(reasoning_content[:100])}..."
+                # Extract reasoning content if available and requested
+                reasoning_content = None
+                if include_reasoning:
+                    message = response.choices[0].message
+                    # Try to get reasoning content from different possible locations
+                    reasoning_content = getattr(message, "reasoning_content", None) or (
+                        hasattr(message, "provider_specific_fields")
+                        and isinstance(message.provider_specific_fields, dict)
+                        and message.provider_specific_fields.get("reasoning_content")
                     )
 
-            # Prepend reasoning content if available
-            if reasoning_content:
-                content = f"<think>{reasoning_content}</think>\n{content}"
+                    if reasoning_content and verbose:
+                        print(
+                            f"Found reasoning content: {repr(reasoning_content[:100])}..."
+                        )
 
-            # If the generation finished due to a stop token, add it back to the content
-            # This is important for tool calling logic that expects to see the stop tokens
-            finish_reason = getattr(response.choices[0], "finish_reason", None)
+                # Prepend reasoning content if available
+                if reasoning_content:
+                    content = f"<think>{reasoning_content}</think>\n{content}"
 
-            if verbose:
-                print(f"API response finish_reason: {finish_reason}")
-                print(f"Stop sequences: {stop_sequences}")
-                print(f"Original content: {repr(original_content)}")
+                # If the generation finished due to a stop token, add it back to the content
+                # This is important for tool calling logic that expects to see the stop tokens
+                finish_reason = getattr(response.choices[0], "finish_reason", None)
 
-            if finish_reason == "stop" and stop_sequences and len(stop_sequences) == 1:
-                # Simple case: only one stop token, just append it
-                stop_token = stop_sequences[0]
-                if stop_token and not content.endswith(stop_token):
-                    content += stop_token
-                    if verbose:
-                        print(f"Added single stop token: {repr(stop_token)}")
-                        print(f"Updated content: {repr(content)}")
+                if verbose:
+                    print(f"API response finish_reason: {finish_reason}")
+                    print(f"Stop sequences: {stop_sequences}")
+                    print(f"Original content: {repr(original_content)}")
 
-            elif finish_reason == "stop" and stop_sequences and len(stop_sequences) > 1:
-                # Multiple stop tokens - handle based on parser type
-                parser_type = self._get_tool_parser_type()
-
-                if parser_type == "unified":
-                    # For unified parser, simply add the </tool> tag
-                    stop_token = "</tool>"
-                    if not content.endswith(stop_token):
+                if finish_reason == "stop" and stop_sequences and len(stop_sequences) == 1:
+                    # Simple case: only one stop token, just append it
+                    stop_token = stop_sequences[0]
+                    if stop_token and not content.endswith(stop_token):
                         content += stop_token
                         if verbose:
-                            print(
-                                f"Added unified parser stop token: {repr(stop_token)}"
-                            )
+                            print(f"Added single stop token: {repr(stop_token)}")
                             print(f"Updated content: {repr(content)}")
 
-                elif parser_type == "legacy":
-                    # For legacy parser, use the existing detection logic
-                    added_stop_token = None
-                    for stop_token in stop_sequences:
-                        if stop_token and not content.endswith(stop_token):
-                            # Check if adding this stop token would create a valid tool call
-                            test_content = content + stop_token
-                            if self._find_first_tool_call(test_content):
-                                content = test_content
-                                added_stop_token = stop_token
-                                break
+                elif finish_reason == "stop" and stop_sequences and len(stop_sequences) > 1:
+                    # Multiple stop tokens - handle based on parser type
+                    parser_type = self._get_tool_parser_type()
 
-                    if verbose and added_stop_token:
-                        print(f"Added detected stop token: {repr(added_stop_token)}")
-                        print(f"Updated content: {repr(content)}")
-                    elif verbose:
-                        print("Could not determine which stop token was hit")
+                    if parser_type == "unified":
+                        # For unified parser, simply add the </tool> tag
+                        stop_token = "</tool>"
+                        if not content.endswith(stop_token):
+                            content += stop_token
+                            if verbose:
+                                print(
+                                    f"Added unified parser stop token: {repr(stop_token)}"
+                                )
+                                print(f"Updated content: {repr(content)}")
 
-                else:
-                    # Fallback to existing logic for unknown parser types
-                    if verbose:
-                        print(
-                            f"Unknown parser type: {parser_type}, using fallback logic"
-                        )
-                    added_stop_token = None
-                    for stop_token in stop_sequences:
-                        if stop_token and not content.endswith(stop_token):
-                            test_content = content + stop_token
-                            if self._find_first_tool_call(test_content):
-                                content = test_content
-                                added_stop_token = stop_token
-                                break
+                    elif parser_type == "legacy":
+                        # For legacy parser, use the existing detection logic
+                        added_stop_token = None
+                        for stop_token in stop_sequences:
+                            if stop_token and not content.endswith(stop_token):
+                                # Check if adding this stop token would create a valid tool call
+                                test_content = content + stop_token
+                                if self._find_first_tool_call(test_content):
+                                    content = test_content
+                                    added_stop_token = stop_token
+                                    break
 
-            return content
-        except asyncio.TimeoutError:
-            raise asyncio.TimeoutError(
-                f"Request timed out after {config.timeout} seconds"
-            )
-        except Exception as e:
-            print(f"API call failed: {e}")
-            raise Exception(f"API call failed: {e}")
+                        if verbose and added_stop_token:
+                            print(f"Added detected stop token: {repr(added_stop_token)}")
+                            print(f"Updated content: {repr(content)}")
+                        elif verbose:
+                            print("Could not determine which stop token was hit")
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((asyncio.TimeoutError, Exception)),
-    )
+                    else:
+                        # Fallback to existing logic for unknown parser types
+                        if verbose:
+                            print(
+                                f"Unknown parser type: {parser_type}, using fallback logic"
+                            )
+                        added_stop_token = None
+                        for stop_token in stop_sequences:
+                            if stop_token and not content.endswith(stop_token):
+                                test_content = content + stop_token
+                                if self._find_first_tool_call(test_content):
+                                    content = test_content
+                                    added_stop_token = stop_token
+                                    break
+
+                return content
+
+        # This should not be reached due to reraise=True, but added for safety
+        raise RuntimeError("Retry loop exited unexpectedly")
+
     async def _generate_single_response_vllm(
         self,
         prompt: str,
@@ -1349,7 +1345,8 @@ class LLMToolClient:
         seed: Optional[int] = None,
         **kwargs,
     ) -> str:
-        """Generate a single response from vLLM models using completion API with tenacity retry"""
+        """Generate a single response from vLLM models using completion API with configurable retry"""
+        from tenacity import AsyncRetrying
 
         config = self.generation_config
 
@@ -1367,6 +1364,7 @@ class LLMToolClient:
             "top_p": top_p if top_p is not None else config.top_p,
             "max_tokens": max_tokens if max_tokens is not None else config.max_tokens,
             "stop": stop_sequences,
+            "timeout": config.timeout,
         }
 
         # Add vLLM-specific parameters
@@ -1397,20 +1395,27 @@ class LLMToolClient:
         params.update(kwargs)
         params["include_stop_str_in_output"] = True
 
-        try:
-            response = await litellm.atext_completion(**params)
-            return (
-                response.choices[0].text
-                if hasattr(response.choices[0], "text")
-                else response.choices[0].message.content or ""
-            )
-        except asyncio.TimeoutError:
-            raise asyncio.TimeoutError(
-                f"Request timed out after {config.timeout} seconds"
-            )
-        except Exception as e:
-            print(f"API call failed: {e}")
-            raise Exception(f"API call failed: {e}")
+        # Retry logic with configurable parameters
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(config.retry_limit),
+            wait=wait_exponential(
+                multiplier=1,
+                min=config.retry_min_wait,
+                max=config.retry_max_wait,
+            ),
+            retry=retry_if_exception_type((asyncio.TimeoutError, Exception)),
+            reraise=True,
+        ):
+            with attempt:
+                response = await litellm.atext_completion(**params)
+                return (
+                    response.choices[0].text
+                    if hasattr(response.choices[0], "text")
+                    else response.choices[0].message.content or ""
+                )
+
+        # This should not be reached due to reraise=True, but added for safety
+        raise RuntimeError("Retry loop exited unexpectedly")
 
     # Keep the old method name for backward compatibility, but delegate to vLLM implementation
     async def _generate_single_response(
