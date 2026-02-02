@@ -63,7 +63,7 @@ class GenerationConfig:
     top_k: int = 1
     min_p: float = 0.0
     retry_limit: int = 3
-    timeout: int = 3600
+    timeout: int = 300
     top_k: int = 1
     repetition_penalty: float = 1.0
     seed: Optional[int] = None
